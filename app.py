@@ -1,4 +1,4 @@
-# Poker Prize Calculator (Streamlit+) 2025-05
+# Poker Prize Calculator – Streamlit edition (English, fixed-mincash)
 import math
 from typing import List, Tuple
 
@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ---------- 核心演算法 ---------- #
+# ---------- helper functions ---------- #
 def build_group_lengths(total_paid: int, beta: float) -> List[int]:
-    """初步依 beta 生成 [2, 3, 4, ...] 等長度序列 (頭 9 名獨立)"""
+    """Initial group lengths after the top 9 single places."""
     if total_paid <= 9:
         return []
     remain, length, groups = total_paid - 9, 2, []
@@ -24,7 +24,7 @@ def build_group_lengths(total_paid: int, beta: float) -> List[int]:
 
 
 def enforce_non_decreasing(lengths: List[int]) -> List[int]:
-    """若最後一組比前一組少，合併直到遞增"""
+    """Merge from the end until every later group has >= players than the previous."""
     i = len(lengths) - 1
     while i > 0:
         if lengths[i] < lengths[i - 1]:
@@ -35,10 +35,12 @@ def enforce_non_decreasing(lengths: List[int]) -> List[int]:
 
 
 def payjump_ok(prizes: List[int]) -> bool:
+    """True if pay-jumps are strictly decreasing (i.e. prize gaps strictly increasing)."""
     jumps = [a - b for a, b in zip(prizes[:-1], prizes[1:])]
     return all(j1 > j2 for j1, j2 in zip(jumps[:-1], jumps[1:]))
 
 
+# ---------- core algorithm ---------- #
 def calc_prize_distribution(
     total_players: int,
     itm_percent: float,
@@ -48,127 +50,133 @@ def calc_prize_distribution(
     beta: float,
     mincash: int,
 ) -> Tuple[List[int], List[Tuple[int, int]]]:
-    """回傳 (prizes_full, group_ranges)；若無可行組合會 raise ValueError"""
-    # 1. ITM 人數
+    """Return per-player prizes and compact group ranges; raise ValueError if impossible."""
+    # 1. number of paid places
     paid = math.ceil(total_players * itm_percent / 100)
     paid = max(1, min(paid, total_players))
 
-    # 2. 初始權重
+    # 2. raw weights
     ranks = np.arange(1, paid + 1)
     weights = ranks ** (-alpha)
     raw = pool * weights / weights.sum()
 
-    # 3. 分組長度 (頭 9 名獨立)
-    group_lengths = build_group_lengths(paid, beta)
-    group_lengths = enforce_non_decreasing(group_lengths)
+    # 3. group lengths
+    group_lengths = enforce_non_decreasing(build_group_lengths(paid, beta))
 
-    # 4. 以中位數取組獎金
-    prizes_group: List[int] = []
-    prizes_group.extend(raw[: min(9, paid)].round(2).tolist())
+    # 4. median prize per group
+    group_prizes: List[int] = []
+    group_prizes.extend(raw[: min(9, paid)].round(2).tolist())
     idx = 9
     for length in group_lengths:
         if idx >= paid:
             break
-        seg = raw[idx : idx + length]
-        prizes_group.append(float(seg[len(seg) // 2]))
+        segment = raw[idx : idx + length]
+        group_prizes.append(float(segment[len(segment) // 2]))
         idx += length
 
-    # 5. round-floor 並加上 mincash 下限
+    # 5. round-floor to given digits
     unit = 10 ** (-round_digits)
-    prizes_group = [max(mincash, math.floor(p / unit) * unit) for p in prizes_group]
+    group_prizes = [math.floor(p / unit) * unit for p in group_prizes]
 
-    # 6. 調整金額使總和回到 pool
+    # 6. force last group to exact mincash
+    if paid > 9:
+        group_prizes[-1] = mincash
+
+    # 7. adjust total to match pool
     total_after = sum(
-        p * (1 if i < 9 else group_lengths[i - 9]) for i, p in enumerate(prizes_group)
+        p * (1 if i < 9 else group_lengths[i - 9]) for i, p in enumerate(group_prizes)
     )
-    diff_pool = pool - total_after
-    prizes_group[0] += diff_pool  # 先把差額放到第一名 (可能是正也可能負)
+    diff = pool - total_after
+    group_prizes[0] += diff  # push difference into 1st prize for now
 
-    # 7. 嚴格遞增 payjump 修正
+    # 8. enforce strictly increasing pay-jumps
     delta = unit
     extra_added = 0
-    for i in range(len(prizes_group) - 1, 0, -1):
-        jump = prizes_group[i - 1] - prizes_group[i]
-        if i == len(prizes_group) - 1:
+    for i in range(len(group_prizes) - 1, 0, -1):
+        jump = group_prizes[i - 1] - group_prizes[i]
+        if i == len(group_prizes) - 1:
             max_jump = jump
             continue
         if jump <= max_jump:
             need = max_jump + delta - jump
-            prizes_group[i - 1] += need
+            group_prizes[i - 1] += need
             extra_added += need
             max_jump = jump + need
         else:
             max_jump = jump
-    prizes_group[0] -= extra_added  # 回收多加的錢
+    group_prizes[0] -= extra_added  # recover the over-allocation
 
-    # 8. 重新檢查 mincash、payjump
-    if prizes_group[-1] < mincash or prizes_group[0] <= 0 or not payjump_ok(prizes_group):
+    # 9. final sanity checks
+    if (
+        group_prizes[-1] != mincash
+        or group_prizes[0] <= 0
+        or not payjump_ok(group_prizes)
+    ):
         raise ValueError
 
-    # 9. 展開到每位玩家
+    # 10. expand to every player
     prizes_full: List[int] = []
-    prizes_full.extend(prizes_group[: min(9, paid)])
+    prizes_full.extend(group_prizes[: min(9, paid)])
     gi = 0
     for length in group_lengths:
         if len(prizes_full) >= paid:
             break
-        prizes_full.extend([prizes_group[9 + gi]] * length)
+        prizes_full.extend([group_prizes[9 + gi]] * length)
         gi += 1
     prizes_full = prizes_full[:paid]
 
-    # 10. 生成 group_ranges 方便表格顯示
-    group_ranges: List[Tuple[int, int]] = []
+    # 11. compact range list for table
+    ranges: List[Tuple[int, int]] = []
     start = 1
     for i, p in enumerate(prizes_full):
         if i == len(prizes_full) - 1 or prizes_full[i + 1] != p:
-            group_ranges.append((start, i + 1))
+            ranges.append((start, i + 1))
             start = i + 2
-    return prizes_full, group_ranges
+    return prizes_full, ranges
 
 
-def find_suggestion(
+def suggest_value(
     which: str,
-    cur_alpha: float,
-    cur_beta: float,
+    alpha: float,
+    beta: float,
     total_players: int,
     itm_percent: float,
     pool: int,
     round_digits: int,
     mincash: int,
 ) -> float | None:
-    """嘗試找第一個可行 Alpha 或 Beta 建議值"""
     if which == "alpha":
         for offset in np.linspace(0, 0.5, 501):
-            for a in (round(cur_alpha + offset, 3), round(cur_alpha - offset, 3)):
-                if 0.5 <= a <= 1:
+            for candidate in (round(alpha + offset, 3), round(alpha - offset, 3)):
+                if 0.5 <= candidate <= 1:
                     try:
                         calc_prize_distribution(
                             total_players,
                             itm_percent,
                             pool,
                             round_digits,
-                            a,
-                            cur_beta,
+                            candidate,
+                            beta,
                             mincash,
                         )
-                        return a
+                        return candidate
                     except ValueError:
                         continue
-    else:
+    else:  # beta
         for offset in np.linspace(0, 1, 101):
-            for b in (round(cur_beta + offset, 1), round(cur_beta - offset, 1)):
-                if 1 <= b <= 2:
+            for candidate in (round(beta + offset, 1), round(beta - offset, 1)):
+                if 1 <= candidate <= 2:
                     try:
                         calc_prize_distribution(
                             total_players,
                             itm_percent,
                             pool,
                             round_digits,
-                            cur_alpha,
-                            b,
+                            alpha,
+                            candidate,
                             mincash,
                         )
-                        return b
+                        return candidate
                     except ValueError:
                         continue
     return None
@@ -178,14 +186,13 @@ def find_suggestion(
 st.set_page_config(page_title="Poker Prize Calculator", layout="wide")
 st.title("Poker Prize Calculator")
 
-col_input, col_output = st.columns([1, 2], gap="medium")
+col_left, col_right = st.columns([1, 2], gap="medium")
 
-with col_input:
-    st.header("參數設定")
-
-    total_players = st.number_input("總參賽人數", min_value=2, step=1, value=524)
+with col_left:
+    st.header("Parameters")
+    total_players = st.number_input("Total entrants", min_value=2, step=1, value=524)
     itm_percent = st.number_input(
-        "獎勵圈百分比 (%)",
+        "Payout percentage (%)",
         min_value=0.5,
         max_value=100.0,
         step=0.5,
@@ -193,53 +200,50 @@ with col_input:
         format="%.1f",
     )
     pool = st.number_input(
-        "總獎池",
+        "Prize pool",
         min_value=0,
         max_value=2_000_000_000,
-        step=1000,
+        step=1_000,
         value=182_000,
         format="%d",
     )
     mincash = st.number_input(
-        "最低分組獎金 mincash",
+        "Fixed min-cash (last group)",
         min_value=0,
         max_value=1_000_000,
         step=100,
-        value=900,
+        value=1_000,
         format="%d",
     )
-
     round_digits = st.number_input(
-        "Round Digits (-1 到 -10)",
+        "Round digits (-1 to -10)",
         min_value=-10,
         max_value=-1,
         step=1,
         value=-2,
         format="%d",
     )
-
     alpha = st.number_input(
-        "Alpha (0.5 到 1.0)",
+        "Alpha (0.5 – 1.0)",
         min_value=0.5,
         max_value=1.0,
         step=0.001,
-        value=0.831,
+        value=0.879,
         format="%.3f",
     )
     beta = st.number_input(
-        "Beta (1.0 到 2.0)",
+        "Beta (1.0 – 2.0)",
         min_value=1.0,
         max_value=2.0,
         step=0.1,
-        value=1.5,
+        value=1.6,
         format="%.1f",
     )
 
-with col_output:
-    st.header("結果")
-
+with col_right:
+    st.header("Results")
     try:
-        prizes, group_ranges = calc_prize_distribution(
+        prizes, ranges = calc_prize_distribution(
             total_players,
             itm_percent,
             pool,
@@ -249,21 +253,23 @@ with col_output:
             mincash,
         )
 
-        st.success("計算成功")
-        st.subheader(f"ITM 人數：{len(prizes)}")
+        st.success("Computation successful")
+        st.subheader(f"ITM players: {len(prizes)}")
 
-        table_rows = [
-            {"Rank": f"{s}" if s == e else f"{s}-{e}", "Prize": f"{prizes[s-1]:,}"}
-            for s, e in group_ranges
-        ]
-        st.table(pd.DataFrame(table_rows))
+        df = pd.DataFrame(
+            {
+                "Rank": [f"{s}" if s == e else f"{s}-{e}" for s, e in ranges],
+                "Prize": [f"{prizes[s-1]:,}" for s, _ in ranges],
+            }
+        )
+        st.table(df)
 
         fmt = FuncFormatter(
-            lambda x, pos: f"{x/1e9:.1f}B"
+            lambda x, pos: f"{x/1e9:.1f} B"
             if x >= 1e9
-            else f"{x/1e6:.1f}M"
+            else f"{x/1e6:.1f} M"
             if x >= 1e6
-            else f"{x/1e3:.0f}K"
+            else f"{x/1e3:.0f} K"
             if x >= 1e3
             else f"{int(x)}"
         )
@@ -279,9 +285,9 @@ with col_output:
         st.pyplot(fig, use_container_width=True)
 
     except ValueError:
-        st.error("無法計算 - 請調整 Alpha / Beta / Round Digits 或 mincash")
+        st.error("Infeasible parameters – adjust Alpha, Beta, round digits, or min-cash.")
 
-        sugg_a = find_suggestion(
+        sugg_a = suggest_value(
             "alpha",
             alpha,
             beta,
@@ -291,7 +297,7 @@ with col_output:
             round_digits,
             mincash,
         )
-        sugg_b = find_suggestion(
+        sugg_b = suggest_value(
             "beta",
             alpha,
             beta,
@@ -301,8 +307,9 @@ with col_output:
             round_digits,
             mincash,
         )
+
         st.info(
-            (f"Alpha 建議值：{sugg_a:.3f}" if sugg_a else "Alpha 無可行建議")
+            (f"Suggested α: {sugg_a:.3f}" if sugg_a else "No α suggestion")
             + " | "
-            + (f"Beta 建議值：{sugg_b:.1f}" if sugg_b else "Beta 無可行建議")
+            + (f"Suggested β: {sugg_b:.1f}" if sugg_b else "No β suggestion")
         )
