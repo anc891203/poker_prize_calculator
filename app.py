@@ -183,13 +183,13 @@ col_input, col_output = st.columns([1, 2], gap="medium")
 with col_input:
     st.header("參數設定")
 
-    total_players = st.number_input("總參賽人數", min_value=2, step=1, value=500)
+    total_players = st.number_input("總參賽人數", min_value=2, step=1, value=524)
     itm_percent = st.number_input(
         "獎勵圈百分比 (%)",
         min_value=0.5,
         max_value=100.0,
         step=0.5,
-        value=15.0,
+        value=12.5,
         format="%.1f",
     )
     pool = st.number_input(
@@ -197,7 +197,7 @@ with col_input:
         min_value=0,
         max_value=2_000_000_000,
         step=1000,
-        value=100_000,
+        value=182_000,
         format="%d",
     )
     mincash = st.number_input(
@@ -205,7 +205,7 @@ with col_input:
         min_value=0,
         max_value=1_000_000,
         step=100,
-        value=1200,
+        value=900,
         format="%d",
     )
 
@@ -223,7 +223,7 @@ with col_input:
         min_value=0.5,
         max_value=1.0,
         step=0.001,
-        value=0.825,
+        value=0.831,
         format="%.3f",
     )
     beta = st.number_input(
