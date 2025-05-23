@@ -232,9 +232,9 @@ with col_left:
         format="%.3f",
     )
     beta = st.number_input(
-        "Beta (1.0 – 2.0)",
+        "Beta (1.0 - )",
         min_value=1.0,
-        max_value=2.0,
+        max_value=10.0,
         step=0.1,
         value=1.6,
         format="%.1f",
